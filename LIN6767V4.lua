@@ -1427,11 +1427,13 @@ do
 	if maid and maid.GiveTask then
 		local camera = workspace.CurrentCamera
 		if camera then
-			maid.GiveTask(camera:GetPropertyChangedSignal("ViewportSize"):Connect(bumpScale))
+			-- colon: Maid:GiveTask reads self._tasks, so a dot call hands the
+			-- connection over as self and dies on "_tasks is not a valid member"
+			maid:GiveTask(camera:GetPropertyChangedSignal("ViewportSize"):Connect(bumpScale))
 		end
 		-- Connected after MD3's own viewport handler, so this wins: MD3's
 		-- rescale() would otherwise reset the scale back to plain fit.
-		maid.GiveTask(main:GetPropertyChangedSignal("Size"):Connect(bumpScale))
+		maid:GiveTask(main:GetPropertyChangedSignal("Size"):Connect(bumpScale))
 	end
 end
 
@@ -1530,7 +1532,7 @@ local function buildLin67Chrome()
 			local maid = Window._maid
 			local conn = main:GetPropertyChangedSignal("Visible"):Connect(syncSearch)
 			if maid and maid.GiveTask then
-				maid.GiveTask(conn)
+				maid:GiveTask(conn)
 			end
 			syncSearch()
 		end
