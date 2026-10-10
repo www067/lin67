@@ -1,7 +1,10 @@
 --[[
-	Spin + Aim Assist — 從 Modern client 抽出的獨立版
-	只有這兩個模組，內建迷你 UI。
-
+	Spin + Aim Assist v2 — 獨立版
+	v1 → v2 改了什麼:
+		· Aim 新增 Smooth / Deadzone / Lock-on（鎖定目標） / Wallcheck 開關
+		· FOV 圓圈可調顏色 + 可填滿
+		· 設定自動存檔（writefile，下次注入自動載入；Enabled 狀態不存）
+		· 面板可摺疊、UI 微調
 	快捷鍵:
 		RightShift  顯示 / 隱藏面板
 		X           切換 Spin
@@ -12,19 +15,19 @@ local Players = cloneref(game:GetService('Players'))
 local RunService = cloneref(game:GetService('RunService'))
 local UserInputService = cloneref(game:GetService('UserInputService'))
 local TextService = cloneref(game:GetService('TextService'))
-local GuiService = cloneref(game:GetService('GuiService'))
+local HttpService = cloneref(game:GetService('HttpService'))
 local CoreGui = cloneref(game:GetService('CoreGui'))
 
 local lplr = Players.LocalPlayer
 local gameCamera = workspace.CurrentCamera or workspace:FindFirstChildWhichIsA('Camera')
-RunService:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
+workspace:GetPropertyChangedSignal('CurrentCamera'):Connect(function()
 	gameCamera = workspace.CurrentCamera or workspace:FindFirstChildWhichIsA('Camera')
 end)
 
 repeat task.wait() until game:IsLoaded()
 
 --// ========================================================================
---// Entity library（原版抽換掉廣告 payload）
+--// Entity library
 --// ========================================================================
 local entitylib = {
 	isAlive = false,
@@ -72,15 +75,6 @@ local function getMousePosition()
 		return gameCamera.ViewportSize / 2
 	end
 	return inputService:GetMouseLocation()
-end
-
-local function loopClean(tbl)
-	for i, v in tbl do
-		if type(v) == 'table' then
-			loopClean(v)
-		end
-		tbl[i] = nil
-	end
 end
 
 local function waitForChildOfType(obj, name, timeout, prop)
@@ -355,13 +349,8 @@ end
 entitylib.start()
 
 --// ========================================================================
---// UI 素材函式（同名版本在 UI_functions.txt）
+--// UI 素材函式
 --// ========================================================================
-local function getfontsize(text, size, font, bounds)
-	local pt = TextService:GetTextSize(text, size, font, bounds or Vector2.new(100000, 100000))
-	return Vector2.new(pt.X, pt.Y)
-end
-
 local function addCorner(parent, radius)
 	local corner = Instance.new('UICorner')
 	corner.CornerRadius = radius or UDim.new(0, 5)
@@ -387,11 +376,13 @@ local function addRoundedShadow(parent)
 end
 
 --// ========================================================================
---// 設定
+--// 設定（自動存檔）
 --// ========================================================================
+local SAVE_PATH = 'SpinAimAssist_v2.json'
+
 local Config = {
 	Spin = {
-		Enabled = false,
+		Enabled = false, -- 不存檔
 		Mode = 'CFrame', -- CFrame / RotVelocity / BodyMover
 		Speed = 40,
 		AxisX = false,
@@ -399,14 +390,66 @@ local Config = {
 		AxisZ = false,
 	},
 	Aim = {
-		Enabled = false,
+		Enabled = false, -- 不存檔
 		Part = 'RootPart', -- RootPart / Head
 		FOV = 100,
 		Speed = 15,
+		Smooth = 100, -- 1-100，100 = v1 行為
+		Deadzone = 0, -- 度；十字線已經對準時不動
+		Lock = false, -- 鎖定最近目標直到脫離範圍/死亡
+		Wallcheck = true,
 		RequireRightClick = false,
 		Circle = true,
+		CircleFilled = false,
+		CircleColor = 'White',
 	},
 }
+
+local CIRCLE_COLORS = {
+	White = Color3.fromRGB(255, 255, 255),
+	Green = Color3.fromRGB(85, 255, 85),
+	Red = Color3.fromRGB(255, 90, 90),
+	Blue = Color3.fromRGB(110, 170, 255),
+	Purple = Color3.fromRGB(200, 120, 255),
+	Yellow = Color3.fromRGB(255, 220, 90),
+}
+local CIRCLE_COLOR_NAMES = {}
+for k in CIRCLE_COLORS do
+	table.insert(CIRCLE_COLOR_NAMES, k)
+end
+table.sort(CIRCLE_COLOR_NAMES)
+
+-- Enabled 不進存檔，其他原樣
+local function saveConfig()
+	if not writefile then return end
+	local saved = {
+		Spin = table.clone(Config.Spin),
+		Aim = table.clone(Config.Aim),
+	}
+	saved.Spin.Enabled = nil
+	saved.Aim.Enabled = nil
+	pcall(function()
+		writefile(SAVE_PATH, HttpService:JSONEncode(saved))
+	end)
+end
+
+local function loadConfig()
+	if not readfile then return end
+	local ok, data = pcall(function()
+		return HttpService:JSONDecode(readfile(SAVE_PATH))
+	end)
+	if not ok or type(data) ~= 'table' then return end
+	for section, values in data do
+		if type(Config[section]) == 'table' and type(values) == 'table' then
+			for key, value in values do
+				if key ~= 'Enabled' and Config[section][key] ~= nil then
+					Config[section][key] = value
+				end
+			end
+		end
+	end
+end
+loadConfig()
 
 local SPIN_KEY = Enum.KeyCode.X
 local AIM_KEY = Enum.KeyCode.C
@@ -470,6 +513,7 @@ local function setSpinEnabled(on)
 			spinBody.Parent = nil
 		end
 	end
+	saveConfig()
 end
 
 --// ========================================================================
@@ -477,6 +521,7 @@ end
 --// ========================================================================
 local aimConnection
 local fovCircle
+local lockedEnt
 local rightClicked = not Config.Aim.RequireRightClick
 
 local moveConst = Vector2.new(1, 0.77) * math.rad(0.5)
@@ -502,6 +547,8 @@ local function updateCircle()
 	if not fovCircle then return end
 	fovCircle.Position = UserInputService:GetMouseLocation()
 	fovCircle.Radius = Config.Aim.FOV
+	fovCircle.Filled = Config.Aim.CircleFilled
+	fovCircle.Color = CIRCLE_COLORS[Config.Aim.CircleColor] or CIRCLE_COLORS.White
 	fovCircle.Visible = Config.Aim.Enabled and Config.Aim.Circle
 end
 
@@ -510,12 +557,9 @@ local function createCircle()
 	fovCircle = newDrawing('Circle')
 	if not fovCircle then return end
 	fovCircle.Filled = false
-	fovCircle.Color = Color3.fromRGB(255, 255, 255)
-	fovCircle.Position = UserInputService:GetMouseLocation()
-	fovCircle.Radius = Config.Aim.FOV
 	fovCircle.NumSides = 100
 	fovCircle.Transparency = 0.7
-	fovCircle.Visible = Config.Aim.Enabled
+	updateCircle()
 end
 
 local function destroyCircle()
@@ -537,8 +581,52 @@ local function getMouseSensitivity()
 	return 0.5
 end
 
+-- 鎖定驗證：還在清單裡、還活著、沒離開螢幕圓圈、（可選）牆後就放手
+local function validLocked(cfg)
+	local ent = lockedEnt
+	if not ent then return false end
+
+	local found = false
+	for _, v in entitylib.List do
+		if v == ent then
+			found = true
+			break
+		end
+	end
+	if not found or not entitylib.isVulnerable(ent) then
+		lockedEnt = nil
+		return false
+	end
+
+	local part = ent[cfg.Part]
+	if not part then
+		lockedEnt = nil
+		return false
+	end
+
+	local pos, vis = gameCamera:WorldToViewportPoint(part.Position)
+	if not vis then
+		lockedEnt = nil
+		return false
+	end
+	local screenMag = (getMousePosition() - Vector2.new(pos.X, pos.Y)).Magnitude
+	-- 放一點緩衝，滑到邊緣不會立刻斷鎖
+	if screenMag > cfg.FOV * 1.3 then
+		lockedEnt = nil
+		return false
+	end
+
+	if cfg.Wallcheck and entitylib.Wallcheck(gameCamera.CFrame.Position, part.Position, true) then
+		lockedEnt = nil
+		return false
+	end
+
+	return true
+end
+
 local function setAimEnabled(on)
 	Config.Aim.Enabled = on
+	lockedEnt = nil
 	rightClicked = not Config.Aim.RequireRightClick
 	updateCircle()
 
@@ -552,14 +640,22 @@ local function setAimEnabled(on)
 			if not mousemoverel then return end
 
 			local cfg = Config.Aim
-			local ent = entitylib.EntityMouse({
-				Range = cfg.FOV,
-				Part = cfg.Part,
-				Players = true,
-				NPCs = false,
-				Wallcheck = true,
-				Origin = gameCamera.CFrame.Position,
-			})
+
+			-- 目標選擇：Lock 開著就沿用舊目標，失效才重找
+			local ent
+			if cfg.Lock and validLocked(cfg) then
+				ent = lockedEnt
+			else
+				ent = entitylib.EntityMouse({
+					Range = cfg.FOV,
+					Part = cfg.Part,
+					Players = true,
+					NPCs = false,
+					Wallcheck = cfg.Wallcheck,
+					Origin = gameCamera.CFrame.Position,
+				})
+				lockedEnt = cfg.Lock and ent or nil
+			end
 			if not ent then return end
 
 			local facing = gameCamera.CFrame.LookVector
@@ -569,8 +665,14 @@ local function setAimEnabled(on)
 
 			local diffYaw = wrapAngle(math.atan2(facing.X, facing.Z) - math.atan2(new.X, new.Z))
 			local diffPitch = math.asin(facing.Y) - math.asin(new.Y)
+
+			-- 已經瞄準了就別抖
+			if cfg.Deadzone > 0 and math.deg(math.sqrt(diffYaw * diffYaw + diffPitch * diffPitch)) < cfg.Deadzone then
+				return
+			end
+
 			local angle = Vector2.new(diffYaw, diffPitch) / (moveConst * getMouseSensitivity())
-			angle *= math.min(cfg.Speed * dt, 1)
+			angle *= math.min(cfg.Speed * dt, 1) * (cfg.Smooth / 100)
 
 			pcall(mousemoverel, angle.X, angle.Y)
 		end)
@@ -580,14 +682,16 @@ local function setAimEnabled(on)
 			aimConnection = nil
 		end
 		destroyCircle()
+		lockedEnt = nil
 	end
+	saveConfig()
 end
 
 --// ========================================================================
 --// 迷你 UI
 --// ========================================================================
 local screenGui = Instance.new('ScreenGui')
-screenGui.Name = 'SpinAimAssist'
+screenGui.Name = 'SpinAimAssist_v2'
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 if not pcall(function() screenGui.Parent = CoreGui end) then
@@ -625,7 +729,6 @@ header.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
 header.BorderSizePixel = 0
 header.Parent = panel
 addCorner(header, UDim.new(0, 8))
--- 底部兩角補回方形，避免圓角蓋到內容
 local headerFix = Instance.new('Frame')
 headerFix.Size = UDim2.new(1, 0, 0, 10)
 headerFix.Position = UDim2.new(0, 0, 1, -10)
@@ -634,15 +737,27 @@ headerFix.BorderSizePixel = 0
 headerFix.Parent = header
 
 local title = Instance.new('TextLabel')
-title.Size = UDim2.new(1, -10, 1, 0)
+title.Size = UDim2.new(1, -40, 1, 0)
 title.Position = UDim2.fromOffset(10, 0)
 title.BackgroundTransparency = 1
-title.Text = 'Spin + Aim Assist   [RightShift]'
+title.Text = 'Spin + Aim v2   [RightShift]'
 title.TextColor3 = Color3.fromRGB(235, 235, 240)
 title.TextSize = 13
 title.Font = Enum.Font.GothamBold
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = header
+
+local collapseButton = Instance.new('TextButton')
+collapseButton.Size = UDim2.fromOffset(24, 24)
+collapseButton.Position = UDim2.new(1, -27, 0, 3)
+collapseButton.BackgroundColor3 = Color3.fromRGB(45, 45, 54)
+collapseButton.BorderSizePixel = 0
+collapseButton.Text = '-'
+collapseButton.TextColor3 = Color3.fromRGB(220, 220, 228)
+collapseButton.TextSize = 16
+collapseButton.Font = Enum.Font.GothamBold
+collapseButton.Parent = header
+addCorner(collapseButton, UDim.new(0, 5))
 
 local rowsFrame = Instance.new('Frame')
 rowsFrame.Name = 'Rows'
@@ -707,6 +822,7 @@ local function addToggleRow(order, label, get, set)
 	button.Parent = row
 	button.Activated:Connect(function()
 		set(not get())
+		saveConfig()
 	end)
 
 	table.insert(refreshers, function()
@@ -740,6 +856,7 @@ local function addDropdownRow(order, label, options, get, set)
 		local idx = table.find(options, get()) or 1
 		idx = idx % #options + 1
 		set(options[idx])
+		saveConfig()
 	end)
 
 	table.insert(refreshers, function()
@@ -795,6 +912,7 @@ local function addSliderRow(order, label, min, max, get, set)
 	UserInputService.InputEnded:Connect(function(input)
 		if dragging and input.UserInputType == Enum.UserInputType.MouseButton1 then
 			dragging = false
+			saveConfig()
 		end
 	end)
 	UserInputService.InputChanged:Connect(function(input)
@@ -811,31 +929,46 @@ local function addSliderRow(order, label, min, max, get, set)
 	return row
 end
 
--- row order: Spin 區塊 1-5，Aim 區塊 10-15
+-- Spin 區塊
 addToggleRow(1, 'Spin  [X]', function() return Config.Spin.Enabled end, setSpinEnabled)
 addDropdownRow(2, 'Mode', {'CFrame', 'RotVelocity', 'BodyMover'},
 	function() return Config.Spin.Mode end,
 	function(v)
-		if Config.Spin.Enabled then setSpinEnabled(false) end
+		local was = Config.Spin.Enabled
+		if was then setSpinEnabled(false) end
 		Config.Spin.Mode = v
-		if Config.Spin.Enabled then setSpinEnabled(true) end
+		if was then setSpinEnabled(true) end
 	end)
 addSliderRow(3, 'Speed', 1, 100, function() return Config.Spin.Speed end, function(v) Config.Spin.Speed = v end)
 addToggleRow(4, 'Axis X', function() return Config.Spin.AxisX end, function(v) Config.Spin.AxisX = v end)
 addToggleRow(5, 'Axis Y', function() return Config.Spin.AxisY end, function(v) Config.Spin.AxisY = v end)
 addToggleRow(6, 'Axis Z', function() return Config.Spin.AxisZ end, function(v) Config.Spin.AxisZ = v end)
 
+-- Aim 區塊
 addToggleRow(10, 'Aim Assist  [C]', function() return Config.Aim.Enabled end, setAimEnabled)
 addDropdownRow(11, 'Part', {'RootPart', 'Head'},
 	function() return Config.Aim.Part end,
-	function(v) Config.Aim.Part = v end)
+	function(v)
+		Config.Aim.Part = v
+		lockedEnt = nil
+	end)
 addSliderRow(12, 'FOV', 10, 800, function() return Config.Aim.FOV end, function(v) Config.Aim.FOV = v end)
 addSliderRow(13, 'Speed', 1, 60, function() return Config.Aim.Speed end, function(v) Config.Aim.Speed = v end)
-addToggleRow(14, 'Require Right Click', function() return Config.Aim.RequireRightClick end, function(v)
+addSliderRow(14, 'Smooth', 1, 100, function() return Config.Aim.Smooth end, function(v) Config.Aim.Smooth = v end)
+addSliderRow(15, 'Deadzone (deg)', 0, 20, function() return Config.Aim.Deadzone end, function(v) Config.Aim.Deadzone = v end)
+addToggleRow(16, 'Lock-on', function() return Config.Aim.Lock end, function(v)
+	Config.Aim.Lock = v
+	lockedEnt = nil
+end)
+addToggleRow(17, 'Wallcheck', function() return Config.Aim.Wallcheck end, function(v)
+	Config.Aim.Wallcheck = v
+	lockedEnt = nil
+end)
+addToggleRow(18, 'Require Right Click', function() return Config.Aim.RequireRightClick end, function(v)
 	Config.Aim.RequireRightClick = v
 	rightClicked = not v
 end)
-addToggleRow(15, 'FOV Circle', function() return Config.Aim.Circle end, function(v)
+addToggleRow(19, 'FOV Circle', function() return Config.Aim.Circle end, function(v)
 	Config.Aim.Circle = v
 	if v then
 		createCircle()
@@ -844,12 +977,20 @@ addToggleRow(15, 'FOV Circle', function() return Config.Aim.Circle end, function
 	end
 	updateCircle()
 end)
+addDropdownRow(20, 'Circle Color', CIRCLE_COLOR_NAMES,
+	function() return Config.Aim.CircleColor end,
+	function(v) Config.Aim.CircleColor = v end)
+addToggleRow(21, 'Circle Filled', function() return Config.Aim.CircleFilled end, function(v) Config.Aim.CircleFilled = v end)
 
 -- 依照列數重算面板高度
+local collapsed = false
 local function resizePanel()
-	local rows = rowsFrame:GetChildren()
+	if collapsed then
+		panel.Size = UDim2.fromOffset(PANEL_W, HEADER_H + PAD)
+		return
+	end
 	local bottom = HEADER_H + PAD
-	for _, v in rows do
+	for _, v in rowsFrame:GetChildren() do
 		if v:IsA('Frame') then
 			bottom = math.max(bottom, v.Position.Y.Offset + v.Size.Y.Offset + PAD)
 		end
@@ -857,6 +998,13 @@ local function resizePanel()
 	panel.Size = UDim2.fromOffset(PANEL_W, bottom)
 end
 rowsLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(resizePanel)
+
+collapseButton.Activated:Connect(function()
+	collapsed = not collapsed
+	rowsFrame.Visible = not collapsed
+	collapseButton.Text = collapsed and '+' or '-'
+	resizePanel()
+end)
 resizePanel()
 
 --// ========================================================================
@@ -882,6 +1030,7 @@ end)
 UserInputService.InputEnded:Connect(function(input)
 	if input.UserInputType == Enum.UserInputType.MouseButton2 then
 		rightClicked = not Config.Aim.RequireRightClick
+		lockedEnt = nil
 	end
 end)
 
@@ -891,4 +1040,4 @@ RunService.RenderStepped:Connect(function()
 	end
 end)
 
-print('[SpinAimAssist] loaded — RightShift = menu, X = spin, C = aim')
+print('[SpinAimAssist v2] loaded — RightShift = menu, X = spin, C = aim')
