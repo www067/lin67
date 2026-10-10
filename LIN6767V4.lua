@@ -25534,15 +25534,21 @@ local function lin67PinSolid()
 end
 
 -- One number drives the content panel and the rows: 0 is the plain opaque skin,
--- 100 lets the background image through everywhere. Without an image both roles
--- are the same color as the shell, so the default reads as "no change".
+-- 100 lets the background image through everywhere. It only means anything with
+-- a picture behind it -- with no background loaded, 85% transparent rows sit
+-- straight on the game and read as a blank window, so they stay opaque until
+-- there is something to see through to.
+local lin67SeeThroughWanted = 0.85
+
 local function lin67SeeThrough(percent)
+	lin67SeeThroughWanted = percent
 	local theme = Window.Theme
 	if not theme then
 		return
 	end
+	local hasBackground = Window._backgroundSource ~= nil
 	for _, role in Lin67BgSeeThroughRoles do
-		theme:SetTransparency(role, percent)
+		theme:SetTransparency(role, if hasBackground then percent else 0)
 	end
 	lin67PinSolid()
 end
@@ -25641,7 +25647,12 @@ do
 				source = resolved
 			end
 		end
-		return rawSetBackground(self, source, transparency, kind)
+		local ok, problem = rawSetBackground(self, source, transparency, kind)
+		-- A picture arriving or leaving changes what see-through means, so the
+		-- slider's number is re-applied against the new state (image present
+		-- -> let it through, removed -> rows go solid again).
+		lin67SeeThrough(lin67SeeThroughWanted)
+		return ok, problem
 	end
 end
 
